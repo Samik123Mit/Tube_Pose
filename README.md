@@ -25,6 +25,9 @@ Ultralytics' internal validation reports **Pose mAP@0.5 = 0.825** on the same sp
 
 Training was early-stopped at epoch 31 of 150 on CPU due to no improvement in 30 epochs. With the flip_idx fix and GPU training to 150 epochs, expected median angle error is under 10°.
 
+Terminal Output:
+<img width="1919" height="933" alt="image" src="https://github.com/user-attachments/assets/9bdb1d43-61dd-4b55-9f08-568272d87819" />
+
 ---
 
 ## Approach

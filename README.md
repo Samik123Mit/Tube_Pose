@@ -10,6 +10,8 @@ The system uses **YOLOv8 pose estimation with two pseudo keypoints** (joint and 
 
 Evaluated on the 14-image held-out validation split (70 ground truth tubes) with Hungarian matching at IoU 0.5 and confidence threshold 0.25.
 
+Colab link: https://colab.research.google.com/drive/1FiIcOteVNOFmcICrQDsGNiHVkx2Sg04T?usp=sharing
+
 **Detection**
 
 - Precision: 0.837

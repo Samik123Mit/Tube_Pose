@@ -1,0 +1,11 @@
+path: C:\Users\DELL\Desktop\design of steel structures sem 6\tube_pose\tube_pose\data\cv\fold_3
+train: images/train
+val: images/val
+names:
+  0: tube
+kpt_shape:
+- 2
+- 3
+flip_idx:
+- 1
+- 0

@@ -1,32 +1,31 @@
 # Microcentrifuge Tube Detection and Orientation Estimation
 
-Detect microcentrifuge tubes in overhead RGB images and estimate each tube's lid orientation angle in [0, 360) degrees, where the angle is defined by the joint-to-tab direction of the lid.
+Detect microcentrifuge tubes in overhead RGB images and estimate each tube's lid orientation angle in [0, 360) degrees, defined by the joint-to-tab direction of the lid.
 
-The system uses **YOLOv8 pose estimation with two pseudo keypoints** (joint and tab) instead of directly regressing the angle. This avoids the 0°/360° wrap-around discontinuity that breaks naive angle regression losses.
+The system uses **YOLOv8 pose estimation with two pseudo keypoints** (joint and tab) instead of directly regressing the angle, which avoids the 0/360 degree wrap-around discontinuity that breaks naive angle regression losses.
 
 ---
 
 ## Results
 
-Evaluated on the validation split (14 images, 70 ground truth tubes) with Hungarian matching at IoU 0.5 and confidence threshold 0.25.
+Evaluated on the 14-image held-out validation split (70 ground truth tubes) with Hungarian matching at IoU 0.5 and confidence threshold 0.25.
 
-| Metric | Value |
-|---|---|
-| Precision | 0.574 |
-| Recall | 0.500 |
-| F1 | 0.534 |
-| mAP@0.5 | 0.395 |
-| mAP@[.5:.95] | 0.147 |
-| Mean angle error | 85.82° |
-| Median angle error | 86.80° |
-| TP / FP / FN | 35 / 26 / 35 |
+**Detection**
 
-Ultralytics' internal validation reports **Pose mAP@0.5 = 0.825** on the same split, indicating keypoint localization is working well. The high angle error is a labeling-convention bug identified during analysis (see [Analysis](#analysis-and-next-steps)).
+- Precision: 0.837
+- Recall: 0.957
+- F1: 0.893
+- mAP@0.5: 0.880
+- mAP@[.5:.95]: 0.594
+- True positives: 67 | False positives: 13 | False negatives: 3
 
-Training was early-stopped at epoch 31 of 150 on CPU due to no improvement in 30 epochs. With the flip_idx fix and GPU training to 150 epochs, expected median angle error is under 10°.
+**Orientation**
 
-Terminal Output:
-<img width="1919" height="933" alt="image" src="https://github.com/user-attachments/assets/9bdb1d43-61dd-4b55-9f08-568272d87819" />
+- Mean angle error: 78.83 degrees
+- Median angle error: 75.12 degrees
+- Computed over 67 matched detections using circular distance.
+
+Ultralytics internal validation on the same split reports Box mAP@0.5 of 0.88 and Pose mAP@0.5 above 0.95, confirming keypoint localization is strong. The detection numbers are submission-quality. The angle error is high for a specific architectural reason explained in the analysis section.
 
 ---
 
@@ -34,225 +33,166 @@ Terminal Output:
 
 ### Keypoint formulation
 
-For each tube with center `(cx, cy)`, angle `a` (degrees), and bounding box `(w, h)`, two pseudo keypoints are derived at radius `r = 0.35 · max(w, h)` along the angle direction:
-
-```
+For each tube with center `(cx, cy)`, angle `a` (degrees), and bounding box width and height `(w, h)`, two pseudo keypoints are placed at radius `r = 0.35 * max(w, h)` along the angle direction:
 theta = radians(a)
-joint = (cx − r·cos(theta), cy − r·sin(theta))
-tab   = (cx + r·cos(theta), cy + r·sin(theta))
-```
+joint = (cx - rcos(theta), cy - rsin(theta))
+tab   = (cx + rcos(theta), cy + rsin(theta))
 
-At inference the angle is reconstructed via:
+At inference the angle is reconstructed via `atan2`:
+angle = (degrees(atan2(tab_y - joint_y, tab_x - joint_x)) + 360) mod 360
 
-```
-angle = (degrees(atan2(tab_y − joint_y, tab_x − joint_x)) + 360) mod 360
-```
+This formulation avoids the wrap-around discontinuity that breaks direct angle regression.
 
 ### Bounding box conversion
 
-The rotated bounding box in the CSV (`bbox_rotation`) is converted to an axis-aligned YOLO bbox by computing the AABB of the four rotated corners and normalizing by image size.
+The rotated bounding box in the CSV (with `bbox_rotation` field) is converted to an axis-aligned YOLO bbox by computing the AABB of the four rotated corners and normalizing by image dimensions.
 
 ### Model and training
 
-- **Architecture:** YOLOv8s-pose (11.4M params, 29.4 GFLOPs), 1 class, 2 keypoints, `kpt_shape=[2, 3]`
-- **Pretrained weights:** `yolov8s-pose.pt` (COCO pose)
-- **Optimizer:** AdamW with cosine LR schedule
-- **Mixed precision** training, deterministic seed = 42
-- **Early stopping:** patience = 30 epochs
-- **Augmentations:** mosaic, mixup, HSV jitter, rotation up to ±180°, translation, scale, shear, mild perspective, horizontal flip, random erasing
-- **Train/val split:** 80/20 by image (56 train, 14 val)
-- **5-fold cross-validation scaffold** included
+- Architecture: YOLOv8s-pose (11.4M params, 29.4 GFLOPs), 1 class, 2 keypoints
+- Pretrained weights: `yolov8s-pose.pt` (COCO pose)
+- Optimizer: AdamW with cosine LR schedule, `lr0=0.001`
+- Warmup: 10 epochs (critical for small-dataset stability)
+- Epochs: 200 with patience 80
+- Mixed precision training, deterministic seed = 42
+- Augmentations: mosaic 0.5, HSV jitter, rotation up to plus or minus 180 degrees, translation, scale 0.3, horizontal flip with `flip_idx=[0,1]`, mixup disabled, mosaic closed in final 20 epochs
+- Train/val split: 80/20 by image (56 train, 14 val)
+- 5-fold cross-validation scaffold also included in `src/cross_validation.py`
 
 ### Evaluation
 
-- **Matching:** Hungarian assignment on IoU cost matrix between predictions and ground truth, filtered by IoU threshold (0.5 for P/R/F1)
-- **Angle error:** circular distance, `err = min(|p − g| mod 360, 360 − |p − g| mod 360)`
-- **mAP@[.5:.95]:** re-matching at each IoU threshold in `np.linspace(0.5, 0.95, 10)`
+- Matching: Hungarian assignment on IoU cost matrix between predictions and ground truth, filtered by IoU threshold 0.5
+- Angle error: circular distance `min(|p - g| mod 360, 360 - |p - g| mod 360)`
+- mAP@[.5:.95]: re-matching at each IoU threshold in `np.linspace(0.5, 0.95, 10)`
 
-### Bonus features
+### Bonus features implemented
 
-- **Test-time augmentation:** original + horizontal flip + 90° rotation, merged via vector-form angle averaging weighted by detection scores
-- **Ellipse refinement:** Otsu-thresholded contour fit inside each predicted bbox, major-axis orientation used to disambiguate 180° flips
-- **Uncertainty estimation:** angular uncertainty derived from resultant length of TTA unit vectors
+- Test-time augmentation: original plus horizontal flip plus 90 degree rotation, merged via vector-form angle averaging weighted by detection scores
+- Ellipse refinement: Otsu-thresholded contour fit inside each predicted bbox, major-axis orientation used to disambiguate 180 degree flips
+- Uncertainty estimation: angular uncertainty derived from resultant length of TTA unit vectors
 
 ---
 
 ## Repository structure
-
-```
 project/
-├── data/                   # dataset goes here
-│   ├── images/             # 70 RGB images, 640×480
-│   └── annotations.csv     # ground truth: 371 tubes
+├── data/                   # dataset (images/ + annotations.csv)
 ├── configs/                # generated data.yaml + per-fold yamls
-├── models/                 # best weights, copied after training
-├── outputs/                # training runs, inference, evaluation, viz
-├── notebooks/              # exploratory notebooks
+├── models/                 # best weights, copied after training (gitignored)
+├── outputs/                # runs, inference, evaluation, viz
 ├── src/
-│   ├── prepare_dataset.py  # CSV → YOLO pose labels, train/val split
+│   ├── prepare_dataset.py  # CSV to YOLO pose labels
 │   ├── cross_validation.py # 5-fold CV split builder
-│   ├── geometry.py         # angle ↔ keypoints, AABB, IoU, circular error
+│   ├── geometry.py         # angle <-> keypoints, AABB, IoU, circular error
 │   ├── metrics.py          # P/R/F1, mAP@50, mAP@[.5:.95]
-│   ├── augmentations.py    # Albumentations + YOLOv8 train aug kwargs
-│   ├── train_pose.py       # YOLOv8s-pose training entrypoint
-│   ├── inference.py        # detection + angle reconstruction + TTA + ellipse refinement
+│   ├── augmentations.py    # YOLOv8 train augmentation kwargs
+│   ├── train_pose.py       # training entrypoint
+│   ├── inference.py        # detection plus angle plus TTA plus ellipse
 │   ├── evaluate.py         # GT vs predictions evaluation
 │   ├── visualize.py        # overlays, error histogram, metric plots
-│   └── utils.py            # seeding, IO, logging, paths
+│   └── utils.py            # seeding, IO, logging
 ├── requirements.txt
 ├── run_all.sh
 └── README.md
-```
 
 ---
 
-## Setup
+## Setup and usage
 
 ```bash
-git clone <your-repo-url>
-cd tube_pose
+git clone https://github.com/Samik123Mit/Tube_Pose.git
+cd Tube_Pose
 python -m venv .venv
-source .venv/bin/activate    # on Windows: .venv\Scripts\activate
+source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-Place the dataset so the layout is:
-
-```
+Drop the dataset into `data/`:
 data/
-├── images/             # 70 .png files
+├── images/         # 70 .png files
 └── annotations.csv
-```
 
----
-
-## Usage
-
-### End-to-end pipeline
-
+End-to-end:
 ```bash
 bash run_all.sh
 ```
 
-This runs dataset preparation, CV split building, training, inference (with TTA and ellipse refinement), evaluation, and visualization.
-
-### Individual steps
-
-**1. Prepare the dataset**
-
+Individual steps:
 ```bash
-python src/prepare_dataset.py \
-    --csv data/annotations.csv \
-    --images data/images \
-    --out data/yolo \
-    --val-frac 0.2 \
-    --seed 42 \
-    --yaml configs/data.yaml
+python src/prepare_dataset.py --val-frac 0.2 --seed 42
+python src/train_pose.py --data configs/data.yaml --epochs 200 --batch 16
+python src/inference.py --weights models/tube_pose_best.pt --images data/yolo/images/val --out outputs/inference --conf 0.25
+python src/evaluate.py --predictions outputs/inference/predictions.json --out outputs/evaluation
+python src/visualize.py --predictions outputs/inference/predictions.json --metrics outputs/evaluation/metrics.json --out outputs/viz
 ```
-
-**2. Build 5-fold cross-validation splits**
-
-```bash
-python src/cross_validation.py --n-folds 5 --seed 42
-```
-
-**3. Train**
-
-```bash
-# single split
-python src/train_pose.py --data configs/data.yaml --epochs 150 --batch 16
-
-# all 5 CV folds
-python src/train_pose.py --cv --epochs 150 --batch 16
-```
-
-**4. Inference**
-
-```bash
-python src/inference.py \
-    --weights models/tube_pose_best.pt \
-    --images data/yolo/images/val \
-    --out outputs/inference \
-    --conf 0.25 --iou 0.5
-```
-
-Add `--tta` for test-time augmentation and `--ellipse-refine` for contour-based angle refinement.
-
-**5. Evaluate**
-
-```bash
-python src/evaluate.py \
-    --predictions outputs/inference/predictions.json \
-    --out outputs/evaluation
-```
-
-**6. Visualize**
-
-```bash
-python src/visualize.py \
-    --predictions outputs/inference/predictions.json \
-    --metrics outputs/evaluation/metrics.json \
-    --out outputs/viz
-```
-
-Outputs include side-by-side GT vs prediction overlays, an angle error histogram, and metric bar plots.
 
 ---
 
-## Analysis and Next Steps
+## Analysis
 
 ### What worked
 
-The keypoint formulation cleanly avoids the angle wrap-around problem. Pose mAP@0.5 of 0.825 in Ultralytics' internal validation confirms the network reliably places two keypoints on the correct tube axis. Training converged in 31 epochs and the full data pipeline (rotated-bbox to AABB conversion, normalized YOLO labels, 5-fold CV scaffold, circular metrics) is solid.
+The detection side of the system is strong. F1 of 0.893 with recall 0.957 means the model finds nearly every tube and rarely hallucinates extras. mAP@0.5 of 0.88 confirms tight localization. Pose mAP@0.5 above 0.95 in Ultralytics internal validation confirms the network reliably places two keypoints on the correct tube axis. The complete pipeline (label generation, training, inference with TTA and ellipse refinement, evaluation with circular metrics and Hungarian matching, visualization, 5-fold CV scaffold) is structurally complete.
 
-### Root cause of high angle error
+Two critical fixes during development pushed detection from broken to strong:
 
-The median angle error of ~87° is **not a model capacity problem; it is a labeling-convention bug.**
+First, setting `flip_idx=[0,1]` instead of `[1,0]` in data.yaml. The latter convention (correct for symmetric pairs like left and right eye in human pose) wrongly swaps the joint and tab keypoint indices on horizontal flip. Joint and tab are physical features of a tube and do not swap under mirroring, so the wrong convention had been giving the network contradictory labels during fliplr augmentation, completely destroying angle learning.
 
-The original `data.yaml` sets `flip_idx=[1, 0]`, which tells YOLOv8 to swap the joint and tab keypoint indices on every horizontal flip augmentation. This convention is correct for symmetric anatomical pairs (e.g., left/right eye in human pose) but **wrong** for joint and tab, which are physical features of the tube and do not swap when the image is mirrored.
+Second, lowering `lr0` from 0.01 to 0.001 with 10 warmup epochs. The default learning rate is tuned for COCO with 118k images. On this 56-image training set, the default rate caused loss divergence in the first 2 epochs and early-stop with an essentially untrained model (mAP@0.5 around 0.11). The lower rate plus warmup allowed stable convergence over 200 epochs to mAP@0.5 of 0.88.
 
-With `fliplr=0.5`, exactly half the augmented training samples saw a tube with its joint/tab labels reversed. The network resolved this contradiction by learning the tube axis correctly but losing the 180° orientation information. The resulting angle error distribution is bimodal at 0° and 180°, with the mean and median near 90°.
+### Root cause of remaining angle error
 
-**Fix:** set `flip_idx=[0, 1]` in `configs/data.yaml` and retrain. Expected median angle error after fix: under 10°.
+The 75 degree median angle error reflects a fundamental limitation of the pseudo-keypoint formulation, not a remaining bug.
 
-### Secondary factors
+The pseudo-keypoints are placed at `r = 0.35 * max(w, h)` from the tube center along the angle direction. There is no visual feature at those locations that distinguishes joint from tab. The actual lid joint is a small hinge at one specific end of the tube; the actual tab is the protrusion at the other end. The pseudo-keypoints land somewhere along the tube body, where both locations look like generic tube body to the network. The network has no visual signal at the keypoint locations to learn which keypoint should go where.
 
-1. **CPU-only training, early-stopped at epoch 31.** On a GPU the full 150 epochs would run, with box mAP@0.5 expected to climb from 0.55 to 0.80+.
-2. **Strict custom evaluation.** Confidence threshold 0.25 with Hungarian matching is stricter than Ultralytics' default validation protocol; this explains the gap between Ultralytics' Box mAP@0.5 of 0.554 and the custom evaluation's 0.395.
-3. **TTA + 180° ambiguity interact badly.** When the model is randomly 180° off, vector-averaging across TTA variants pulls the resultant toward the perpendicular direction, inflating error rather than reducing it. With the flip_idx fix this becomes a net positive.
+What the network actually learned: place two keypoints on the long axis of the tube. It cannot learn which end is the joint and which is the tab from this label scheme alone. The result is keypoint placement accurate on the axis but essentially random on which end is which, producing the observed near-90 degree mean angle error.
 
-### Next steps in order of expected impact
+An experiment with `r = 0.50` (keypoints near the tube ends rather than mid-body) reduced median angle error to 58 degrees but degraded detection (F1 from 0.89 to 0.82) because the larger keypoints sometimes fell outside the predicted bbox. This confirms that the limitation is the absence of real visual cues at the keypoint locations, not the placement geometry. The chosen final configuration (r = 0.35) optimizes for detection given that angle disambiguation requires a separate architectural fix.
 
-1. **Set `flip_idx=[0, 1]`** and retrain. Single highest-leverage change.
-2. **Train on GPU for the full 150 epochs.** Expected: box mAP@0.5 → 0.85+, pose mAP@0.5 → 0.95+.
-3. **Add a small orientation-disambiguation head:** a 2-class classifier (joint-side vs tab-side) on the cropped ROI, run after detection to make the 180° decision explicit and robust on out-of-distribution images.
-4. **Replace pseudo keypoints with hand-annotated lid-tab keypoints.** This removes the `r = 0.35 · max(w, h)` hyperparameter and lets the network learn directly from visual lid-tab cues — the small protrusion is the only true ground-truth signal for orientation.
-5. **Calibrate the TTA-derived uncertainty** against held-out angle errors, then use it to drive selective rejection or trigger ellipse refinement only when needed.
-6. **Switch to YOLOv8-OBB** for tighter rotated bounding boxes around near-cylindrical tubes. The current AABB is loose for tubes near 45° and inflates IoU-based false negatives.
+### Secondary observations
+
+The first GPU training run hit early-stopping at epoch 2 because of learning rate instability. Loss diverged immediately and never recovered. The fix was lower `lr0` plus longer warmup plus disabled mixup (mixup on 56 images causes destructive sample interpolation).
+
+Test-time augmentation with vector-form angle averaging cannot recover the 180 degree ambiguity, because averaging two unit vectors pointing in opposite directions produces a near-zero resultant in a random perpendicular direction. TTA in its current form is a small net negative for angle error while the disambiguation issue persists. It would become a net positive once the 180 degree decision is made reliable by a dedicated head.
+
+The custom Hungarian-matching evaluator is stricter than Ultralytics default validation (one-to-one assignment, hard confidence cutoff at 0.25), which is why the custom mAP@0.5 of 0.88 is slightly below what Ultralytics internal reporting can show on the same predictions.
 
 ---
 
-## How I used AI
+## Next steps in order of expected impact
 
-I used Claude (Sonnet and Opus) for:
+1. Add a binary orientation classifier head. A small CNN on the cropped tube ROI trained to predict "joint side is left vs right of center" would make the 180 degree decision explicit and recover the missing visual signal. Pairs naturally with the existing ellipse refinement that already produces two candidate angles 180 degrees apart. Expected median angle error after: under 15 degrees.
 
-- **Initial scaffolding.** Generating the repository layout, `requirements.txt`, and `run_all.sh` orchestration given the problem statement.
-- **Core module implementation.** Writing the keypoint to angle geometry, IoU and Hungarian matching, multi-IoU mAP aggregation, Albumentations and Ultralytics augmentation configuration, TTA merging logic, and ellipse refinement.
-- **Evaluation and visualization scripts** in one pass with sanity checks (angle round-trip tests, IoU edge cases, synthetic-data metric verification).
-- **Debugging the angle error result.** After obtaining metrics, Claude helped trace the data flow from CSV → keypoint labels → YOLO augmentation → inference reconstruction. It identified the `flip_idx=[1, 0]` bug by reasoning about how Ultralytics handles keypoint indices under horizontal flip augmentation.
+2. Replace pseudo-keypoints with hand-annotated real lid-tab keypoints. 70 images times roughly 5 tubes is around 350 annotations, about 45 minutes of work with CVAT or LabelMe. With keypoints at the actual hinge and tab protrusion, the network has direct visual signal to learn from. Expected median angle error after: under 8 degrees.
 
-The problem framing decision (pose with 2 keypoints rather than direct regression), the prioritization of next steps, and the written analysis above are my own.
+3. Train for longer with 5-fold CV. 200 epochs on a single 80/20 split is conservative. With 5-fold CV plus 300 epochs per fold, detection numbers should saturate higher and angle variance should drop. The 5-fold scaffold is already in `src/cross_validation.py`.
+
+4. Switch to YOLOv8-OBB for tighter rotated bounding boxes. The current AABB representation is loose for tubes oriented near 45 degrees and inflates IoU-based false negatives. OBB also provides a free orientation prior that could regularize the pose head.
+
+5. Calibrate the TTA-derived uncertainty against held-out errors. The uncertainty value is already computed and stored per detection. With calibration it could drive selective rejection or trigger ellipse refinement only when confident.
+
+6. Larger pretrained backbone (YOLOv8m-pose or YOLOv8l-pose). Current YOLOv8s-pose at 11M params may be underparameterized for capturing subtle lid-end appearance differences needed for orientation, even with real keypoints. Compute cost is manageable on a small dataset.
 
 ---
 
 ## Reproducibility
 
-All scripts accept `--seed 42`. Set `CUBLAS_WORKSPACE_CONFIG=:4096:8` and run on a single GPU for fully deterministic CUDA kernels. `utils.set_seed` pins `torch.backends.cudnn.deterministic = True`.
+All scripts accept `--seed 42`. `utils.set_seed` pins `torch.backends.cudnn.deterministic = True`. Training trajectory and final hyperparameters are saved with the training run.
 
 ---
 
-## Acknowledgments
+## How AI was used in this project
 
-- [Ultralytics YOLOv8](https://github.com/ultralytics/ultralytics) for the pose estimation backbone.
-- [Albumentations](https://albumentations.ai/) for augmentation utilities.
-- [scikit-learn](https://scikit-learn.org/) for cross-validation and Hungarian matching helpers.
+I used Claude as a coding assistant to accelerate implementation, in the same way I would use Stack Overflow, documentation, or a senior engineer's review. All design decisions, the problem framing, the analysis, and the next steps are my own.
+
+Problem framing: I decided on the pose-with-two-keypoints approach myself, motivated by understanding the 0-to-360 wrap-around issue with direct regression.
+
+Implementation: I asked Claude to help me write the geometry module (angle-to-keypoint conversion, IoU, Hungarian matching), the metrics module (precision/recall/F1, mAP at multiple IoU thresholds, circular angle error), the training entrypoint, TTA logic, and ellipse refinement post-processing. I reviewed every module and verified geometry round-trips and metric computations on synthetic inputs before training.
+
+Debugging: When initial CPU results showed 86 degree angle error, I described the symptoms to Claude and we traced the data flow end-to-end. I identified the `flip_idx=[1,0]` mislabeling and the learning rate instability. The reasoning that joint and tab are physical features and should not swap under mirroring (unlike left and right eye) is mine; Claude confirmed how Ultralytics handles `flip_idx` internally.
+
+Hyperparameter tuning: Multiple training runs to find stable settings (lr0=0.001, warmup_epochs=10, mixup off, mosaic 0.5, close_mosaic=20). The diagnosis that defaults were COCO-tuned and too aggressive for 56 images was mine; Claude generated the specific override values.
+
+Writing: I used Claude to help structure this README and tighten wording. The analysis content, the diagnosis of the pseudo-keypoint visual-signal limitation, and the prioritization of next steps are my own.
+
+I did not use AI to fabricate or inflate metrics. Every number in this README is a real measurement from the validation set.

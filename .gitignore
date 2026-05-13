@@ -1,0 +1,26 @@
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+.env
+.ipynb_checkpoints/
+
+# Heavy artifacts
+*.pt
+*.pth
+*.onnx
+models/
+data/yolo/
+data/cv/
+data/images/
+
+# Training runs
+outputs/runs/
+outputs/inference/
+outputs/inference_tta/
+outputs/evaluation_tta/
+runs/
+
+# OS
+.DS_Store
+Thumbs.db

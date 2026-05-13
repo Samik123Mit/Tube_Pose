@@ -118,7 +118,7 @@ def write_yaml(out_root: Path, yaml_path: Path) -> None:
         "val": "images/val",
         "names": {0: "tube"},
         "kpt_shape": [2, 3],  # 2 keypoints with (x, y, v)
-        "flip_idx": [1, 0],   # swap joint <-> tab on horizontal flip (180 deg ambiguity is handled by metric)
+        "flip_idx": [0, 1],   # swap joint <-> tab on horizontal flip (180 deg ambiguity is handled by metric)
     }
     save_yaml(data, yaml_path)
     LOG.info(f"wrote data yaml: {yaml_path}")

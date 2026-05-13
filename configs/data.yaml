@@ -1,4 +1,4 @@
-path: C:\Users\DELL\Desktop\design of steel structures sem 6\tube_pose\tube_pose\data\yolo
+path: /content/Tube_Pose/Tube_Pose/data/yolo
 train: images/train
 val: images/val
 names:
